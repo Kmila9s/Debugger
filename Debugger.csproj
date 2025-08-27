@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Add all files from P1 directory -->
-    <ProjectReference Include="../Parser/Parser.csproj" />
+    <ProjectReference Include="../Interpreter/Interpreter.csproj" />
+    <ProjectReference Include="../TimeMachine/TimeMachine.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.2" />
   </ItemGroup>
