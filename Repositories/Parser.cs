@@ -8,6 +8,10 @@ public class Parser
 {
     public string FileContent { get; private set; }
     public List<Entity> Entities { get; private set; } = new();
+    private List<string> _excludedEnds = new()
+    {
+        "if", "when", "process"
+    };
     public Parser(string filePath)
     {
         if (!File.Exists(filePath)) throw new FileNotFoundException();
@@ -32,7 +36,7 @@ public class Parser
                 it = 2;
             }
             if(it == 1){
-                if(comparer.StartsWith("end ") && comparer.EndsWith(";")){
+                if(comparer.StartsWith("end ") && comparer.EndsWith(";") && !_excludedEnds.Any(comparer.EndsWith)){
                     rawEntity.Add(item.Trim());
                     Entity entity = new(rawEntity.ToArray());
                     Entities.Add(entity);
@@ -41,15 +45,18 @@ public class Parser
                 }else
                     rawEntity.Add(item);
             }else if(it == 2){
-                if(comparer.StartsWith("end ")){
+                string clean = comparer.TrimEnd(';');
+                if (comparer.StartsWith("end ") && !_excludedEnds.Any(clean.EndsWith))
+                {
                     rawEntity.Add(item);
                     Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
-                    if(entity == null) throw new Exception("Entity not found");
+                    if (entity == null) throw new Exception("Entity not found");
                     Architecture arch = new(entity.Ports, entity.Generics);
                     arch.Syntetize(rawEntity.ToArray());
                     entity.SetArchitecture(arch);
                     it = 0;
-                }else
+                }
+                else
                     rawEntity.Add(item);
             }
         }
