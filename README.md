@@ -7,8 +7,8 @@ This module is a core component of **Kmila-9s**, a project officially titled "Ap
 **Author:** Ulrich Tamayo Daniel
 **Email:** dulricht1700@alumno.ipn.mx
 **Email 2:** danielulrichtamayo@gmail.com
-**Version:** 0.6.0
-**Last Updated:** December 13, 2025
+**Version:** 1.14.1
+**Last Updated:** May 1, 2026
 
 ---
 
@@ -25,14 +25,19 @@ This project is built using .NET and MAUI, ensuring a modern and maintainable co
 
 ## 2. The Debugger Module
 
-This specific module, the **Debugger**, acts as the central orchestrator for the VHDL simulation process. It is responsible for taking raw VHDL source files, preparing them for execution, and (ultimately) managing the interactive debugging session. It integrates the `Parser`, `Interpreter`, and `TimeMachine` modules to create a cohesive simulation environment.
+This specific module, the **Debugger**, is a thin façade that bridges raw VHDL source files with the `Interpreter` data models. In the current state of the codebase it does **two** jobs:
+
+1.  Run a fast structural pass to extract top-level `entity` / `architecture` blocks and hydrate `Interpreter.Services.Entity` / `Interpreter.Services.Architecture` objects from them.
+2.  Run a lightweight source-level **lint pass** (`RunDiagnostics`) that emits structured `Parser.Models.Diagnostic` entries (missing `;`, `begin` / `end` imbalance) for the editor surface to render as Monaco markers — *before* the structural parse runs, so warnings still appear on broken sources.
+
+It does **not** orchestrate the live simulation, manage breakpoints, or interact with `TimeMachine`; those responsibilities live in `Kmila.Shared.Services` (`SimulationParameters`, `SimulationCoordinator`, etc.) and the `Interpreter` simulation runner. Earlier README revisions described a wider "central orchestrator" role that never materialised here — this module stayed pre-processing-only.
 
 ### Core Responsibilities
-*   **VHDL File Processing:** Reading raw `.vhdl` source files from the filesystem.
-*   **Structural Analysis:** Parsing the file content to identify top-level `entity` and `architecture` blocks.
-*   **Data Model Hydration:** Constructing the in-memory C# objects (like `Entity` and `Architecture` from the `Interpreter` module) that are required for the simulation engine to work.
-*   **Simulation Orchestration:** (Future) Integrating with the `Interpreter` and `TimeMachine` to control the step-by-step execution of the VHDL code.
-*   **State Inspection:** (Future) Providing the hooks needed to inspect signal and variable states, manage breakpoints, and visualize data.
+*   **VHDL File Processing:** Reading raw `.vhdl` source files from the filesystem (`File.ReadAllText` in the constructor).
+*   **Structural Analysis:** Walking the file line-by-line with a 3-state state machine (default → entity → architecture) to identify top-level blocks.
+*   **Data Model Hydration:** Constructing `Entity` and `Architecture` objects (from the `Interpreter` module) and attaching the architecture to its declaring entity via `entity.SetArchitecture(arch)`.
+*   **Source-level Diagnostics:** Collecting non-fatal warnings about missing semicolons and `begin` / `end` balance in `Diagnostics`, suitable for direct mapping to Monaco's `setModelMarkers`.
+*   **Resilient parsing:** The lint pass runs *before* the structural pass so that even if the structural pass throws, the editor still shows diagnostics for the user to act on.
 
 ## 3. Architecture of the Debugger Module
 
@@ -40,19 +45,36 @@ The Debugger module is designed as a high-level coordinator that prepares data f
 
 ### Key Components
 
-*   **`Program.cs`**: The main entry point for the application. It is currently responsible for scanning a directory of VHDL files and initiating the parsing process for each one.
+*   **`Program.cs`**: A small console test harness that scans the `Codes/` directory for `.vhdl` files and parses each one, printing the entity count it found per file. Useful for smoke-testing the parser bridge in isolation.
 
-*   **`Repositories/Parser.cs`**: A specialized file processor that acts as a bridge between VHDL source code and the `Interpreter` module. It reads the content of a `.vhdl` file, uses string manipulation to identify the boundaries of `entity` and `architecture` blocks, and uses this information to instantiate the `Entity` and `Architecture` data models required by the interpreter.
+*   **`Repositories/Parser.cs`**: The only real class in the module. Reads a `.vhdl` file in the constructor, exposes:
+    *   `string FileContent { get; private set; }` — raw file text.
+    *   `List<Entity> Entities { get; private set; }` — entities discovered (with their architectures already attached after parsing).
+    *   `List<Parser.Models.Diagnostic> Diagnostics { get; private set; }` — structured warnings produced by the lint pass.
+    *   `void ParseFile()` — runs the lint pass first, then walks the file with the 3-state state machine to populate `Entities`.
+    *   `private void RunDiagnostics(string source)` — the lint pass itself.
+    *   `private static bool LooksLikeStatement(string lower)` — heuristic that decides which lines should require a trailing `;`.
 
 ### Core Data Models
 
-This module primarily uses and creates data models defined in the **Interpreter Module**, including:
-*   **`Interpreter.Models.Entity`**: Represents a VHDL entity, including its ports and generics.
-*   **`Interpreter.Services.Architecture`**: Represents a VHDL architecture, containing the logic to be simulated.
+This module **uses** data models defined in two upstream modules:
+
+*   **`Interpreter.Services.Entity`** — represents a VHDL entity, including its ports and generics.
+*   **`Interpreter.Services.Architecture`** — represents a VHDL architecture; `Syntetize(string[] lines)` is invoked here once the architecture body has been collected.
+*   **`Parser.Models.Diagnostic`** + **`Parser.Models.DiagnosticSeverity`** — structured diagnostic record used to surface lint findings to the Editor page. The Debugger never instantiates `Parser.Models.ParserException` directly; that is the job of the upstream `Parser` project, but the Editor maps both into the same diagnostic stream.
+
+### Lint diagnostics emitted
+
+| Code | Severity | Trigger |
+|------|----------|---------|
+| `VHD-MISSING-SEMICOLON` | Warning | Line looks like a statement (`<=`, `:=`, `=>`, or starts with `library`/`use`/`signal`/`variable`/`constant`) but does not end with `;`, `,`, `is`, `then`, `else`, `loop`, `begin`, `generate`, `(`, or `)`. |
+| `VHD-BLOCK-BALANCE` | Warning | Total `begin` keyword count does not match total `end` keyword count across the whole file. Reported once at the last line. |
+
+Errors thrown by the upstream `Parser` project propagate as `Parser.Models.ParserException`; callers (e.g. the Editor page) typically convert them with `Diagnostic.FromException(...)` so they appear in the same Monaco marker stream.
 
 ## 4. How to Use This Module
 
-To use the debugger's parsing functionality, you provide the path to a VHDL file to the `Debugger.Repositories.Parser`. The `ParseFile()` method then processes the file and populates its `Entities` list.
+To use the debugger's parsing functionality, you provide the path to a VHDL file to the `Debugger.Repositories.Parser`. The `ParseFile()` method then processes the file, runs the lint pass, and populates the `Entities` and `Diagnostics` lists.
 
 ```csharp
 using Debugger.Repositories;
@@ -68,13 +90,24 @@ foreach (var file in files)
         Parser vhdlFileParser = new(file);
 
         // 2. Process the file to identify entities and architectures.
+        //    The lint pass runs first, even if the structural pass later throws.
         vhdlFileParser.ParseFile();
 
         // 3. The parsed entities are now available for the Interpreter.
         Console.WriteLine($"File: {file}, Entities found: {vhdlFileParser.Entities.Count}");
+
+        // 4. Surface non-fatal lint warnings (mirrors what the Editor page does
+        //    when wiring Monaco's setModelMarkers).
+        foreach (var d in vhdlFileParser.Diagnostics)
+        {
+            Console.WriteLine($"  [{d.Severity}] L{d.Line}:{d.StartColumn} {d.Code} — {d.Message}");
+        }
     }
     catch (Exception ex)
     {
+        // Structural failures (e.g. "Entity not found") propagate. The editor
+        // surface typically catches these and maps them to error-level
+        // diagnostics via Diagnostic.FromException(...).
         Console.WriteLine($"An error occurred while parsing {file}: {ex.Message}");
     }
 }
@@ -83,148 +116,191 @@ foreach (var file in files)
 ## 5. Dependencies
 
 This module integrates other key parts of the Kmila-9s project and relies on:
-*   **`Interpreter` Module**: For its core data models (`Entity`, `Architecture`).
-*   **`TimeMachine` Module**: (For future integration) To control the simulation timeline.
-*   **`Parser` Module**: For the low-level `Tokenizer`.
-*   **`Microsoft.Extensions.Logging`**: For logging and diagnostics.
+*   **`Interpreter` Module**: For its data models (`Entity`, `Architecture`) and the architecture-synthesis entry point (`Architecture.Syntetize`).
+*   **`Parser` Module**: For two things — the `Tokenizer` (currently instantiated but reserved for future structural rewrites) and the `Parser.Models.Diagnostic` / `Parser.Models.DiagnosticSeverity` types used by the lint pass.
+*   **.NET 9 BCL only** otherwise — no `Microsoft.Extensions.Logging`, no `TimeMachine` dependency. The Debugger is a pre-processing layer; the live simulation is driven from the `Kmila.Shared` Editor stack, not from this project.
 
 ## 6. Debugger Flow and Class Relationships
 
-The following diagrams illustrate the current data flow and class relationships for the file processing stage.
+The following diagrams illustrate the **actual** data flow and class relationships of the module as it stands today. Earlier revisions of this README depicted a "State Manager / Time Travel Logic / Simulation Orchestrator" subsystem inside the Debugger that never existed in the source — it has been removed.
 
 ### 6.1. High-Level Data Flow
 
-This diagram shows how the Debugger processes VHDL files to prepare them for the interpreter.
-
 ```mermaid
 graph TD
-    A["VHDL Files (.vhdl)"] --> B["Debugger.Repositories.Parser"];
-    B -->|Identifies entities & architectures| C{"Interpreter Models (Entity, Architecture)"};
-    C --> D["Interpreter Engine"];
+    A["VHDL Files (.vhdl)"] --> B["Debugger.Repositories.Parser"]
+    B -->|RunDiagnostics first| D["List&lt;Parser.Models.Diagnostic&gt;<br/>(warnings)"]
+    B -->|Structural state machine| C["Interpreter.Services.Entity<br/>+ Architecture (with body synthesised)"]
+    D --> E["Editor (Monaco markers)<br/>[External — Kmila.Shared]"]
+    C --> F["Interpreter Simulation<br/>[External]"]
 
     style B fill:#ccf,stroke:#333,stroke-width:2px
-    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#fec,stroke:#333,stroke-width:1px
+    style F fill:#bbf,stroke:#333,stroke-width:2px
 ```
 
 ### 6.2. Detailed Class Diagram
-
-This diagram shows the key classes and their relationship with other modules.
 
 ```mermaid
 classDiagram
     direction LR
 
     class Program {
-        +static Main()
+        +static Main(args : string[])
     }
 
     class DbgParser["Debugger.Repositories.Parser"] {
         +FileContent : string
         +Entities : List~Entity~
-        +ParseFile()
+        +Diagnostics : List~Diagnostic~
+        -_excludedEnds : List~string~
+        +Parser(filePath : string)
+        +ParseFile() void
+        -RunDiagnostics(source : string) void
+        -LooksLikeStatement(lower : string)$ bool
     }
 
-    class IntEntity["Interpreter.Models.Entity"] {
+    class IntEntity["Interpreter.Services.Entity"] {
         <<External>>
+        +Name : string
+        +Ports
+        +Generics
+        +SetArchitecture(arch)
     }
-    
+
     class IntArch["Interpreter.Services.Architecture"] {
         <<External>>
+        +Syntetize(lines : string[])
     }
 
     class Tok["Parser.Repositories.Tokenizer"] {
+        <<External, reserved>>
+    }
+
+    class Diag["Parser.Models.Diagnostic"] {
         <<External>>
+        +Severity : DiagnosticSeverity
+        +Line : int
+        +StartColumn : int
+        +EndColumn : int
+        +Code : string
+        +Message : string
     }
 
     Program --> DbgParser : creates and uses
-    DbgParser --> IntEntity : creates
-    DbgParser --> IntArch : creates
-    DbgParser --> Tok : uses
+    DbgParser --> IntEntity : instantiates
+    DbgParser --> IntArch : instantiates and Syntetize()
+    DbgParser ..> Tok : instantiates (currently unused)
+    DbgParser --> Diag : appends warnings
 ```
 
 ### 6.3. Sequence Diagram: Parsing a File
 
-This diagram shows the runtime interactions when `Program.cs` processes a single VHDL file.
-
 ```mermaid
 sequenceDiagram
     participant Main
-    participant DbgParser as "Debugger.Parser"
+    participant DbgParser as "Debugger.Repositories.Parser"
     participant FileIO as "File IO"
+    participant Arch as "Interpreter.Services.Architecture"
 
     Main->>DbgParser: new(filePath)
     activate DbgParser
     DbgParser->>FileIO: ReadAllText(filePath)
-    FileIO-->>DbgParser: returns file content
+    FileIO-->>DbgParser: file content
     deactivate DbgParser
-    
+
     Main->>DbgParser: ParseFile()
     activate DbgParser
-    
-    loop For each line in content
-        DbgParser->>DbgParser: Identify `entity` and `architecture` blocks
+    DbgParser->>DbgParser: RunDiagnostics(FileContent)
+    Note right of DbgParser: emits VHD-MISSING-SEMICOLON,<br/>VHD-BLOCK-BALANCE warnings
+
+    loop For each non-empty line
+        DbgParser->>DbgParser: Detect entity / architecture starts
+        DbgParser->>DbgParser: Collect lines until "end ...;"
     end
-    
-    DbgParser->>DbgParser: Create Entity and Architecture objects
-    
+
+    DbgParser->>DbgParser: new Entity(rawLines)
+    DbgParser->>Arch: new Architecture(ports, generics)
+    DbgParser->>Arch: Syntetize(rawLines)
+    DbgParser->>DbgParser: entity.SetArchitecture(arch)
     deactivate DbgParser
-    DbgParser-->>Main: Entities list is populated
+    DbgParser-->>Main: Entities + Diagnostics populated
 ```
 
 ### 6.4. Module Diagram
+
 ```mermaid
 graph TD
-
-    user["User<br>[External]"]
-    vhdl_code["VHDL Code Files<br>/Codes/"]
-    subgraph debugger_system["VHDL Debugger<br>[External]"]
-        subgraph debugger_app_boundary["Debugger Application<br>[External]"]
-            main_logic["Main Application Logic<br>/Program.cs"]
-            ui["User Interface<br>[External]"]
-            %% Edges at this level (grouped by source)
-            ui["User Interface<br>[External]"] -->|"Sends commands to"| main_logic["Main Application Logic<br>/Program.cs"]
-        end
-        subgraph parser_boundary["Parser<br>[External]"]
-            vhdl_parser["VHDL Parser<br>/Repositories/Parser.cs"]
-        end
-        subgraph interpreter_boundary["Interpreter<br>[External]"]
-            vhdl_interpreter["VHDL Interpreter<br>[External]"]
-            tokenizer["Tokenizer<br>/Interpreter.Services.Tokenizer (referenced in Parser.cs)"]
-            vhdl_models["VHDL Models<br>/Interpreter.Models (referenced in Parser.cs)"]
-            %% Edges at this level (grouped by source)
-            vhdl_interpreter["VHDL Interpreter<br>[External]"] -->|"Uses | VHDL data structures"| vhdl_models["VHDL Models<br>/Interpreter.Models (referenced in Parser.cs)"]
-        end
-        subgraph time_machine_boundary["Time Machine<br>[External]"]
-            state_manager["State Manager<br>[External]"]
-            time_travel_logic["Time Travel Logic<br>[External]"]
-            %% Edges at this level (grouped by source)
-            time_travel_logic["Time Travel Logic<br>[External]"] -->|"Retrieves states from"| state_manager["State Manager<br>[External]"]
-        end
-        %% Edges at this level (grouped by source)
-        main_logic["Main Application Logic<br>/Program.cs"] -->|"Invokes"| vhdl_parser["VHDL Parser<br>/Repositories/Parser.cs"]
-        main_logic["Main Application Logic<br>/Program.cs"] -->|"Controls"| vhdl_interpreter["VHDL Interpreter<br>[External]"]
-        main_logic["Main Application Logic<br>/Program.cs"] -->|"Manages"| state_manager["State Manager<br>[External]"]
-        vhdl_parser["VHDL Parser<br>/Repositories/Parser.cs"] -->|"Uses | VHDL tokens"| tokenizer["Tokenizer<br>/Interpreter.Services.Tokenizer (referenced in Parser.cs)"]
-        vhdl_parser["VHDL Parser<br>/Repositories/Parser.cs"] -->|"Creates | VHDL AST"| vhdl_models["VHDL Models<br>/Interpreter.Models (referenced in Parser.cs)"]
-        vhdl_interpreter["VHDL Interpreter<br>[External]"] -->|"Consumes | VHDL AST"| vhdl_parser["VHDL Parser<br>/Repositories/Parser.cs"]
-        state_manager["State Manager<br>[External]"] -->|"Captures states from"| vhdl_interpreter["VHDL Interpreter<br>[External]"]
+    vhdl_code["VHDL Code Files<br>/Codes/*.vhdl"]
+    subgraph debugger_boundary["Debugger Project"]
+        program["Program.cs<br>(test harness)"]
+        dbg_parser["Repositories/Parser.cs<br>(structural pass + lint pass)"]
+        program -->|invokes| dbg_parser
     end
-    %% Edges at this level (grouped by source)
-    user["User<br>[External]"] -->|"Interacts with"| ui["User Interface<br>[External]"]
-    vhdl_parser["VHDL Parser<br>/Repositories/Parser.cs"] -->|"Reads | VHDL files"| vhdl_code["VHDL Code Files<br>/Codes/"]
 
+    subgraph parser_project["Parser Project [External]"]
+        diagnostic["Parser.Models.Diagnostic<br>+ DiagnosticSeverity"]
+        tokenizer["Parser.Repositories.Tokenizer<br>(instantiated, reserved)"]
+    end
+
+    subgraph interpreter_project["Interpreter Project [External]"]
+        entity["Interpreter.Services.Entity"]
+        architecture["Interpreter.Services.Architecture<br>.Syntetize(lines)"]
+    end
+
+    subgraph kmila_shared["Kmila.Shared [External — actual UI consumer]"]
+        editor_page["Pages/Editor.razor<br>(Monaco markers)"]
+        sim_coord["Services/SimulationParameters,<br>SimulationCoordinator"]
+    end
+
+    dbg_parser -->|reads| vhdl_code
+    dbg_parser -->|emits warnings into| diagnostic
+    dbg_parser -.->|references| tokenizer
+    dbg_parser -->|hydrates| entity
+    dbg_parser -->|hydrates and synthesises| architecture
+
+    editor_page -->|consumes Diagnostics + maps via Diagnostic.FromException| dbg_parser
+    sim_coord -->|drives the actual simulation, NOT the Debugger| architecture
 ```
 
 ## 7. Current Limitations
 
 The following limitations exist in the current implementation:
 
-*   **Tokenizer Not Actively Used:** The `Tokenizer` class from the Parser module is instantiated in `ParseFile()` but not actively used. This is reserved for future enhancement to provide more robust parsing.
-*   **No Multiline Comment Handling:** The parser uses simple line-by-line string matching and does not handle VHDL multiline comments (`/* ... */`).
-*   **Simple Parsing Approach:** Structure detection relies on string pattern matching rather than true AST-based parsing.
-*   **Single Entity-Architecture Assumption:** The parser expects architectures to reference entities that were declared earlier in the same file.
+*   **Tokenizer Not Actively Used:** The `Tokenizer` class from the Parser module is instantiated inside `ParseFile()` but its tokens are not consumed. The structural pass still uses line-level string matching. Reserved for a future rewrite.
+*   **VHDL Comments:** The lint pass strips `--` line comments before analysis, but multiline / block comment forms are not specially handled (VHDL itself does not have `/* ... */`).
+*   **Simple Parsing Approach:** Structure detection relies on `comparer.StartsWith("entity")` / `"architecture"` — no real AST is built in this project. AST-style parsing happens in the upstream `Parser` project.
+*   **Single Entity-Architecture Assumption:** Architectures are matched to entities declared *earlier* in the same file, by name. Out-of-order declarations and cross-file lookups raise `Exception("Entity not found")`.
+*   **Single Diagnostic Pass:** `RunDiagnostics` only emits two codes today (`VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`). Richer rules (port direction, type mismatches, unused signals) live in the simulation pipeline, not here.
+*   **No Simulation, No TimeMachine:** Despite the project name, this module does not run a simulation or talk to `TimeMachine`. Live debugging is driven from `Kmila.Shared.Services` against the `Interpreter`.
 
 ## 8. Changelog
+
+### Version 1.14.1 (2026-05-01)
+
+#### Documentation Re-alignment
+
+*   **Section 2 / "Core Responsibilities"**: Removed the long-standing claim that the Debugger module orchestrates `Parser` + `Interpreter` + `TimeMachine`. The current code is pre-processing only (structural extraction + lint diagnostics). Live simulation has always been driven by `Kmila.Shared.Services`.
+*   **Section 3 / Key Components**: Added the `Diagnostics` property, the `RunDiagnostics(string)` lint pass, and the `LooksLikeStatement(string)` helper. Added an explicit "Lint diagnostics emitted" subsection enumerating the two codes (`VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`).
+*   **Section 4 / Usage example**: Updated the snippet to surface `Diagnostics` (the property the editor actually consumes), and clarified that `Parser.Models.ParserException` is mapped via `Diagnostic.FromException(...)` upstream.
+*   **Section 5 / Dependencies**: Removed the bogus `TimeMachine` and `Microsoft.Extensions.Logging` dependencies — the Debugger references `Interpreter` and `Parser` only, on plain .NET 9.
+*   **Section 6 / Diagrams** — all four regenerated:
+    *   §6.1 now shows the lint pass running before the structural pass and feeding the editor independently.
+    *   §6.2 lists the real public surface (`Diagnostics`, `_excludedEnds`, the `RunDiagnostics`/`LooksLikeStatement` helpers) and adds the `Parser.Models.Diagnostic` external class.
+    *   §6.3 inserts the `RunDiagnostics` step and the call to `Architecture.Syntetize`.
+    *   §6.4 removed the fictional "State Manager" and "Time Travel Logic" boundaries and replaced them with the real consumer surface (`Kmila.Shared.Pages.Editor` and `SimulationCoordinator`).
+*   **Section 7 / Limitations**: Refined the comment-handling note (line comments are stripped, no block-comment form exists in VHDL anyway), added "Single Diagnostic Pass" + "No Simulation, No TimeMachine" to set correct expectations.
+
+---
+
+### Version 0.6.1 (2026-02-21)
+
+#### Documentation Fixes
+
+*   **README.md**: Fixed module diagram to correctly reference `Parser.Repositories.Tokenizer` instead of `Interpreter.Services.Tokenizer`
+*   **README.md**: Updated VHDL Models node to reference both `Interpreter.Models` and `Interpreter.Services` namespaces (Entity is in Services, models in Models)
+
+---
 
 ### Version 0.6.0 (2025-12-13)
 
@@ -247,4 +323,33 @@ The following limitations exist in the current implementation:
 *   **README.md**: Added version information, last updated date, current limitations section, and this changelog
 
 ---
-*Last Updated: December 13, 2025*
+
+### Version 1.14.0 (2026-04-19)
+
+*   **`Repositories/Parser.cs` — diagnostics collection.** Added a
+    `Diagnostics` property (typed as `global::Parser.Models.Diagnostic` to
+    dodge the namespace collision between this file's `Parser` class and
+    the `Parser` project) plus a lightweight `RunDiagnostics(source)` lint
+    pass that catches missing `;` at statement ends and `begin` / `end`
+    imbalance before falling through to the full parser. Feeds directly
+    into Monaco's `setModelMarkers` from the editor.
+*   `ParserException` instances are also coerced via
+    `Diagnostic.FromException(...)` into the same list, so surfacing in
+    the editor is uniform regardless of whether the error came from the
+    lint pass or the parser throwing.
+*   **Build hygiene** — `<NoWarn>` added for XML-doc ripple so the
+    Debugger project builds cleanly alongside the rest of the solution.
+
+---
+
+## What's new in v1.15 (2 May 2026)
+
+- **Source-line-accurate diagnostics (#21).** `ParseFile` now collects each non-blank line as `(lineIndex, text)` and feeds those tuples to the new `Entity.Syntetize(IReadOnlyList<(int, string)>)` / `Architecture.Syntetize(IReadOnlyList<(int, string)>)` overloads, which call `Tokenizer.TokenizeLineAt`. Error messages reference the user's actual file lines instead of the tokenizer's internal call counter.
+- **Lint diagnostics surface even on parse failure.** `Program.Main` wraps `ParseFile()` in try/catch and prints every `Diagnostic` (e.g. `VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`) before re-emitting the structural error. Previously a throw masked all upstream lint output.
+- **Architecture-slicing bug fixed.** The substring-match fallback `comparer.Contains(currentArchName.ToLower())` no longer mistakes `end maxv;` for arch end of `architecture A of …`. Exact-name matching only, plus a control-flow keyword exclusion list (`end if/loop/case/for/while/generate/record`).
+- **Workstation GC** enabled at the project level (#7).
+
+Full release notes: [`../Documentacion/CHANGELOG_v1.15.md`](../Documentacion/CHANGELOG_v1.15.md).
+
+---
+*Last Updated: 2026-05-02*

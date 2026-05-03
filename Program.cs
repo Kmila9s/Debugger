@@ -57,8 +57,34 @@ class Program
         {
             Console.WriteLine(file);
             Repositories.Parser parser = new(file);
-            parser.ParseFile();
-            Console.WriteLine($"Entities found: {parser.Entities.Count}");
+            string? parseError = null;
+            try
+            {
+                parser.ParseFile();
+                Console.WriteLine($"Entities found: {parser.Entities.Count}");
+            }
+            catch (Exception ex)
+            {
+                // Capture the structural parse error so we can show it
+                // AFTER printing the lint diagnostics. Otherwise users see
+                // only the throw and miss the missing-`;` warnings that
+                // RunDiagnostics has already collected.
+                parseError = ex.Message;
+            }
+
+            // Surface lint-style diagnostics (missing-`;`, mismatched begin/end,
+            // etc.) that ParseFile collected via RunDiagnostics. These were
+            // previously populated but never printed, so users couldn't see
+            // structural problems in their VHDL until something blew up later.
+            foreach (var d in parser.Diagnostics)
+            {
+                Console.WriteLine($"  [{d.Severity}] L{d.Line}:{d.StartColumn} {d.Code}: {d.Message}");
+            }
+
+            if (parseError != null)
+            {
+                Console.WriteLine($"  [Error] {parseError}");
+            }
         }
     }
 }

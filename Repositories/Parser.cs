@@ -52,17 +52,25 @@ public class Parser
     public List<Entity> Entities { get; private set; } = new();
 
     /// <summary>
-    /// Keywords that should not be treated as end-block markers.
+    /// Structured diagnostics collected during the most recent <see cref="ParseFile"/>
+    /// call. Errors that used to propagate as a <see cref="Parser.Models.ParserException"/>
+    /// still do — but we also mirror them here so the Editor can surface
+    /// line-accurate Monaco markers without catching exceptions.
+    /// Warnings (missing semicolons, style lapses, etc.) are pushed here and
+    /// don't interrupt the parse path.
     /// </summary>
-    /// <remarks>
-    /// When encountering "end" followed by one of these keywords, the parser
-    /// continues collecting lines rather than ending the current block.
-    /// This prevents "end if;", "end when;", and "end process;" from being
-    /// mistaken for entity or architecture end statements.
-    /// </remarks>
+    public List<global::Parser.Models.Diagnostic> Diagnostics { get; private set; } = new();
+
+    /// <summary>
+    /// Keywords that should not be treated as end-block markers when they
+    /// follow <c>end</c>. Without these, lines like <c>end loop;</c> inside a
+    /// for-loop or <c>end case;</c> inside a process body would prematurely
+    /// terminate the architecture and feed Synthesize() a truncated chunk.
+    /// </summary>
     private List<string> _excludedEnds = new()
     {
-        "if", "when", "process"
+        "if", "when", "process", "loop", "case", "generate", "record",
+        "component", "block", "units"
     };
 
     /// <summary>
@@ -107,23 +115,41 @@ public class Parser
     /// </exception>
     public void ParseFile()
     {
+        // Run the source-level lint pass FIRST so its warning diagnostics are
+        // populated even when the structural parse below throws (missing
+        // `end`, unresolved entity reference, etc). Without this, any fatal
+        // parse error blanked the Diagnostics list and students saw no
+        // Monaco squiggles at all on broken files.
+        RunDiagnostics(FileContent);
+
         // Note: Tokenizer is instantiated but not actively used in current implementation.
         // Reserved for future enhancement to provide more robust parsing.
         Tokenizer tokenizer = new("");
 
-        // Normalize content: split by newlines, trim whitespace, remove empty lines
-        string[] content = FileContent.Split("\n")
-                            .Select(p => p.Trim())
-                            .Where(p => !String.IsNullOrEmpty(p) && p != " ")
-                            .ToArray();
-
-        List<string> rawEntity = new();
-        int it = 0;  // State: 0=default, 1=in entity, 2=in architecture
-        string currentEntityArchName = string.Empty;
-
-        foreach (var item in content)
+        // Normalize content but keep original 0-based line indices — the
+        // tokenizer's error formatter renders them as 1-based "Line N", so
+        // we pass the index (i) not the human number (i+1).
+        var rawLines = FileContent.Split("\n");
+        var content = new List<(int lineNo, string text)>(rawLines.Length);
+        for (int i = 0; i < rawLines.Length; i++)
         {
-            string comparer = item.Trim().ToLower();
+            var trimmed = rawLines[i].Trim();
+            if (string.IsNullOrEmpty(trimmed) || trimmed == " ") continue;
+            content.Add((i, trimmed));
+        }
+
+        List<(int line, string text)> rawEntity = new();
+        int it = 0;  // State: 0=default, 1=in entity, 2=in architecture
+        string currentArchName = string.Empty;
+        string currentEntityArchName = string.Empty;
+        // Track nested function/procedure depth so `end <name>;` lines for
+        // local helpers don't get mis-detected as the architecture's end.
+        int funcProcDepth = 0;
+
+        foreach (var entry in content)
+        {
+            var item = entry.text;
+            string comparer = item.ToLower();
 
             // Detect start of entity block
             if (comparer.StartsWith("entity"))
@@ -135,8 +161,11 @@ public class Parser
             {
                 // Format: "architecture ArchName of EntityName is"
                 // Index:       0           1      2      3       4
-                currentEntityArchName = item.Split(' ')[3];
+                var archParts = item.Split(' ');
+                currentArchName = archParts.Length > 1 ? archParts[1] : string.Empty;
+                currentEntityArchName = archParts.Length > 3 ? archParts[3] : string.Empty;
                 it = 2;
+                funcProcDepth = 0;
             }
 
             // State 1: Collecting entity lines
@@ -146,41 +175,165 @@ public class Parser
                 // Exclude "end if;", "end when;", "end process;"
                 if (comparer.StartsWith("end ") && comparer.EndsWith(";") && !_excludedEnds.Any(comparer.EndsWith))
                 {
-                    rawEntity.Add(item.Trim());
-                    Entity entity = new(rawEntity.ToArray());
+                    rawEntity.Add((entry.lineNo, item.Trim()));
+                    var entity = new Entity();
+                    entity.Syntetize(rawEntity);
                     Entities.Add(entity);
                     rawEntity = new();
                     it = 0;
                 }
                 else
                 {
-                    rawEntity.Add(item);
+                    rawEntity.Add((entry.lineNo, item));
                 }
             }
             // State 2: Collecting architecture lines
             else if (it == 2)
             {
-                string clean = comparer.TrimEnd(';');
-                // Check for architecture end: "end ArchName;" or "end architecture;"
-                if (comparer.StartsWith("end ") && !_excludedEnds.Any(clean.EndsWith))
+                rawEntity.Add((entry.lineNo, item));
+
+                // Track function/procedure nesting so `end Adder;` inside the
+                // arch declarative region doesn't end the whole architecture.
+                if ((comparer.Contains("function ") && comparer.Contains(" is")) ||
+                    (comparer.Contains("procedure ") && comparer.Contains(" is")))
                 {
-                    rawEntity.Add(item);
-
-                    // Find the entity this architecture belongs to
-                    Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
-                    if (entity == null) throw new Exception("Entity not found");
-
-                    // Create architecture and attach to entity
-                    Architecture arch = new(entity.Ports, entity.Generics);
-                    arch.Syntetize(rawEntity.ToArray());
-                    entity.SetArchitecture(arch);
-                    it = 0;
+                    funcProcDepth++;
+                    continue;
                 }
-                else
+
+                if (comparer.StartsWith("end ") && comparer.EndsWith(";"))
                 {
-                    rawEntity.Add(item);
+                    var parts = comparer.Split(' ');
+                    string endName = parts.Length >= 2 ? parts[1].TrimEnd(';') : string.Empty;
+
+                    // Inside a function/procedure: `end function;` or `end <fn_name>;`
+                    // closes one nesting level. Don't treat as arch end yet.
+                    if (funcProcDepth > 0)
+                    {
+                        if (endName == "function" || endName == "procedure" || !_excludedEnds.Contains(endName))
+                        {
+                            funcProcDepth--;
+                        }
+                        continue;
+                    }
+
+                    // At depth 0: it's the arch end IF the suffix matches the
+                    // arch name, the entity name, or is the bare `end;`.
+                    if (_excludedEnds.Contains(endName))
+                        continue;
+
+                    bool matchesArch =
+                        endName == currentArchName.ToLower() ||
+                        endName == currentEntityArchName.ToLower() ||
+                        endName == "architecture" ||
+                        string.IsNullOrEmpty(endName); // `end;`
+
+                    if (matchesArch)
+                    {
+                        Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
+                        if (entity == null) throw new Exception("Entity not found");
+
+                        Architecture arch = new(entity.Ports, entity.Generics);
+                        arch.Syntetize(rawEntity);
+                        entity.SetArchitecture(arch);
+                        rawEntity = new();
+                        it = 0;
+                    }
                 }
             }
         }
+
+    }
+
+    /// <summary>
+    /// Lightweight source-level validator run after <see cref="ParseFile"/>.
+    /// Emits warning-level diagnostics for common student mistakes:
+    /// <list type="bullet">
+    ///   <item><description>Statement-ending lines without the expected semicolon.</description></item>
+    ///   <item><description>Mismatched begin / end depth.</description></item>
+    /// </list>
+    /// Runs character-by-character on the ORIGINAL <see cref="FileContent"/>
+    /// (not the whitespace-collapsed array used by ParseFile) so the
+    /// line/column coords it reports still match what the student sees in
+    /// Monaco.
+    /// </summary>
+    private void RunDiagnostics(string source)
+    {
+        if (string.IsNullOrEmpty(source)) return;
+
+        var lines = source.Replace("\r\n", "\n").Split('\n');
+        int beginDepth = 0, endDepth = 0;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var raw = lines[i];
+            // Strip VHDL line comments (-- to end-of-line) before analysis.
+            var commentStart = raw.IndexOf("--", StringComparison.Ordinal);
+            var effective = commentStart >= 0 ? raw[..commentStart] : raw;
+            var trimmed = effective.TrimEnd();
+            if (trimmed.Length == 0) continue;
+
+            var lower = trimmed.ToLowerInvariant();
+
+            // Track begin/end balance — mismatched totals surface at the
+            // end of the file as a single diagnostic.
+            if (lower == "begin" || lower.EndsWith(" begin"))
+                beginDepth++;
+            if (lower.StartsWith("end ") || lower == "end" || lower.StartsWith("end;"))
+                endDepth++;
+
+            // Missing-semicolon detector — fires on any statement-looking
+            // line that doesn't terminate properly. Skips block headers
+            // (entity/architecture/process/…), labels, and comments.
+            if (LooksLikeStatement(lower) && !trimmed.EndsWith(";") && !trimmed.EndsWith(",") &&
+                !trimmed.EndsWith("is") && !trimmed.EndsWith("then") &&
+                !trimmed.EndsWith("else") && !trimmed.EndsWith("loop") &&
+                !trimmed.EndsWith("begin") && !trimmed.EndsWith("generate") &&
+                !trimmed.EndsWith("(") && !trimmed.EndsWith(")"))
+            {
+                Diagnostics.Add(new global::Parser.Models.Diagnostic
+                {
+                    Severity    = global::Parser.Models.DiagnosticSeverity.Warning,
+                    Line        = i + 1,
+                    StartColumn = raw.Length - raw.TrimStart().Length + 1,
+                    EndColumn   = Math.Max(1, effective.Length) + 1,
+                    Code        = "VHD-MISSING-SEMICOLON",
+                    Message     = "Statement appears to be missing a trailing ';'. The simulator tolerates this but your synthesizer won't."
+                });
+            }
+        }
+
+        if (beginDepth != endDepth)
+        {
+            Diagnostics.Add(new global::Parser.Models.Diagnostic
+            {
+                Severity    = global::Parser.Models.DiagnosticSeverity.Warning,
+                Line        = Math.Max(1, lines.Length),
+                StartColumn = 1,
+                EndColumn   = 1,
+                Code        = "VHD-BLOCK-BALANCE",
+                Message     = $"Block mismatch: {beginDepth} 'begin' keyword(s) vs {endDepth} 'end' keyword(s). Double-check your block closers."
+            });
+        }
+    }
+
+    /// <summary>
+    /// Heuristic: does this stripped-and-lower-cased line look like a
+    /// statement that ought to end with a semicolon? Rules out declarations
+    /// whose terminators are handled by block parsers (entity/architecture/
+    /// process/if/case/when), library imports, and obvious keywords.
+    /// </summary>
+    private static bool LooksLikeStatement(string lower)
+    {
+        if (lower.Length == 0) return false;
+        // Signal / variable assignments, port assignments, procedure calls.
+        if (lower.Contains("<=") || lower.Contains(":=") || lower.Contains("=>"))
+            return true;
+        // Library / use / signal / variable / constant declarations.
+        if (lower.StartsWith("library ") || lower.StartsWith("use ") ||
+            lower.StartsWith("signal ") || lower.StartsWith("variable ") ||
+            lower.StartsWith("constant "))
+            return true;
+        return false;
     }
 }
