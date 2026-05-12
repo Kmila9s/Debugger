@@ -274,6 +274,96 @@ The following limitations exist in the current implementation:
 *   **Single Diagnostic Pass:** `RunDiagnostics` only emits two codes today (`VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`). Richer rules (port direction, type mismatches, unused signals) live in the simulation pipeline, not here.
 *   **No Simulation, No TimeMachine:** Despite the project name, this module does not run a simulation or talk to `TimeMachine`. Live debugging is driven from `Kmila.Shared.Services` against the `Interpreter`.
 
+## 7.bis. Audit diagrams (2026-05-09)
+
+These diagrams complement sections 6.1–6.4. They were added during the cross-module
+audit because the existing TT1 diagrams either misrepresented this module
+(`fig_5_2_c4_contenedores` claimed Debugger delegates tokenization to Parser and
+coordinates with TimeMachine — neither is true) or did not depict the lint-first
+pipeline at all. Sources also live in `Documentacion/TT1/diagrams/`.
+
+### `fig_5_5_12_clases_debugger` — Debugger class detail
+
+```mermaid
+classDiagram
+    direction TB
+
+    class DbgParser {
+        +string FileContent
+        +List~Entity~ Entities
+        +List~Diagnostic~ Diagnostics
+        -List _excludedEnds
+        -int funcProcDepth
+        +ParseFile() void
+        +RunDiagnostics(content) void
+        -LooksLikeStatement(line) bool
+    }
+
+    class Tokenizer {
+        <<from Parser>>
+        +ReadFile(path) void
+        +Evaluate(token) void
+    }
+
+    class Diagnostic {
+        <<from Parser.Models>>
+        +Severity Severity
+        +int Line
+        +int StartColumn
+        +int EndColumn
+        +string Code
+        +string Message
+        +FromException(ex)$ Diagnostic
+    }
+
+    class Entity {
+        <<from Interpreter.Services>>
+        +Syntetize(lines: List~tuple~) void
+        +SetArchitecture(arch) void
+    }
+
+    class Architecture {
+        <<from Interpreter.Services>>
+        +Syntetize(rawEntity: List~tuple~) void
+    }
+
+    DbgParser ..> Tokenizer : instancia (no consume tokens)
+    DbgParser "1" *-- "*" Entity : produce
+    DbgParser "1" *-- "*" Diagnostic : emite
+    Entity "1" *-- "1" Architecture : compone
+```
+
+### `fig_5_11_12_act_debugger_lint_resilience` — Lint-first pipeline
+
+```mermaid
+flowchart TD
+    A([DbgParser.ParseFile]) --> B[Cargar FileContent desde disco]
+    B --> C[**Lint pass**: RunDiagnostics FileContent]
+    C --> D[Por cada linea]
+    D --> E{LooksLikeStatement?}
+    E -->|Si y falta `;`| F[Diagnostic VHD-MISSING-SEMICOLON]
+    E -->|No| G[Skip]
+    D --> H[Contar begin / end por bloque]
+    H --> I{Balance?}
+    I -->|No| J[Diagnostic VHD-BLOCK-BALANCE]
+    F --> K[Diagnostics.Add]
+    J --> K
+    G --> L
+    K --> L[Continuar siguiente linea]
+    L --> M{Quedan lineas?}
+    M -->|Si| D
+    M -->|No| N[Lint pass completo: Diagnostics persistentes]
+
+    N --> O[**Structural pass**: maquina line-based<br/>default -> in-entity -> in-architecture]
+    O --> P{Excepcion en parsing?}
+    P -->|Si| Q[Capturar y agregar a Diagnostics]
+    Q --> R([Retornar: Entities parciales + Diagnostics completos])
+    P -->|No| S[Crear Entity / Architecture<br/>con tuplas List int string]
+    S --> T[Entity.Syntetize / Architecture.Syntetize]
+    T --> U[Entity.SetArchitecture]
+    U --> V([Retornar: Entities completas + Diagnostics])
+```
+
 ## 8. Changelog
 
 ### Version 1.14.1 (2026-05-01)
