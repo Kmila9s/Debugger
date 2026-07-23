@@ -113,7 +113,16 @@ public class Parser
     /// Thrown with message "Entity not found" if an architecture references an entity
     /// that was not previously parsed from the file.
     /// </exception>
-    public void ParseFile()
+    public void ParseFile() => ParseFile(CancellationToken.None);
+
+    /// <summary>
+    /// F-G-08 pass 4 (2026-07-17): cancellable overload. Threads the token
+    /// through both <c>entity.Syntetize</c> and <c>arch.Syntetize</c> calls
+    /// so the wall-timeout hook set by <c>KMILA_SIM_WALL_TIMEOUT_MS</c> in
+    /// <c>HeadlessSimulator</c> can actually break a stuck synthesis descent
+    /// instead of waiting for the outer HTTP client to disconnect.
+    /// </summary>
+    public void ParseFile(CancellationToken cancellationToken)
     {
         // Run the source-level lint pass FIRST so its warning diagnostics are
         // populated even when the structural parse below throws (missing
@@ -177,7 +186,8 @@ public class Parser
                 {
                     rawEntity.Add((entry.lineNo, item.Trim()));
                     var entity = new Entity();
-                    entity.Syntetize(rawEntity);
+                    // F-G-08 pass 4: use the tuple-list + ct overload so wall-timeout can break out.
+                    entity.Syntetize(rawEntity, cancellationToken);
                     Entities.Add(entity);
                     rawEntity = new();
                     it = 0;
@@ -234,7 +244,8 @@ public class Parser
                         if (entity == null) throw new Exception("Entity not found");
 
                         Architecture arch = new(entity.Ports, entity.Generics);
-                        arch.Syntetize(rawEntity);
+                        // F-G-08 pass 4: use the tuple-list + ct overload so wall-timeout can break out.
+                        arch.Syntetize(rawEntity, cancellationToken);
                         entity.SetArchitecture(arch);
                         rawEntity = new();
                         it = 0;

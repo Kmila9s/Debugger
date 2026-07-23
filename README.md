@@ -30,7 +30,7 @@ This specific module, the **Debugger**, is a thin façade that bridges raw VHDL 
 1.  Run a fast structural pass to extract top-level `entity` / `architecture` blocks and hydrate `Interpreter.Services.Entity` / `Interpreter.Services.Architecture` objects from them.
 2.  Run a lightweight source-level **lint pass** (`RunDiagnostics`) that emits structured `Parser.Models.Diagnostic` entries (missing `;`, `begin` / `end` imbalance) for the editor surface to render as Monaco markers — *before* the structural parse runs, so warnings still appear on broken sources.
 
-It does **not** orchestrate the live simulation, manage breakpoints, or interact with `TimeMachine`; those responsibilities live in `Kmila.Shared.Services` (`SimulationParameters`, `SimulationCoordinator`, etc.) and the `Interpreter` simulation runner. Earlier README revisions described a wider "central orchestrator" role that never materialised here — this module stayed pre-processing-only.
+It does **not** orchestrate the live simulation or manage breakpoints; those responsibilities live in `Kmila.Shared.Services` (`SimulationParameters`, `SimulationCoordinator`, etc.) and the `Interpreter` simulation runner. `Debugger.csproj` still `ProjectReference`s both `Interpreter` and `TimeMachine` because the structural pass hands the results back to `Interpreter` types and downstream consumers (Kmila.Shared) rely on TimeMachine snapshots being reachable from the same assembly graph — but nothing inside `Debugger` itself calls into TimeMachine. Earlier README revisions described a wider "central orchestrator" role that never materialised here; this module stayed pre-processing-only.
 
 ### Core Responsibilities
 *   **VHDL File Processing:** Reading raw `.vhdl` source files from the filesystem (`File.ReadAllText` in the constructor).
@@ -51,7 +51,8 @@ The Debugger module is designed as a high-level coordinator that prepares data f
     *   `string FileContent { get; private set; }` — raw file text.
     *   `List<Entity> Entities { get; private set; }` — entities discovered (with their architectures already attached after parsing).
     *   `List<Parser.Models.Diagnostic> Diagnostics { get; private set; }` — structured warnings produced by the lint pass.
-    *   `void ParseFile()` — runs the lint pass first, then walks the file with the 3-state state machine to populate `Entities`.
+    *   `void ParseFile()` — runs the lint pass first, then walks the file with the 3-state state machine to populate `Entities`. Forwards to `ParseFile(CancellationToken.None)`.
+    *   `void ParseFile(CancellationToken cancellationToken)` — cancellable overload added in Session 22 pass 4 (F-G-08). Threads the token into both `entity.Syntetize(rawEntity, ct)` and `arch.Syntetize(rawEntity, ct)` so the wall-timeout hook (`KMILA_SIM_WALL_TIMEOUT_MS` in `HeadlessSimulator`) can actually interrupt a stuck synthesis descent instead of waiting for the HTTP client to disconnect. Prior to pass 4 the parser had no cancellation surface.
     *   `private void RunDiagnostics(string source)` — the lint pass itself.
     *   `private static bool LooksLikeStatement(string lower)` — heuristic that decides which lines should require a trailing `;`.
 
