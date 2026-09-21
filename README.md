@@ -274,6 +274,7 @@ The following limitations exist in the current implementation:
 *   **Single Entity-Architecture Assumption:** Architectures are matched to entities declared *earlier* in the same file, by name. Out-of-order declarations and cross-file lookups raise `Exception("Entity not found")`.
 *   **Single Diagnostic Pass:** `RunDiagnostics` only emits two codes today (`VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`). Richer rules (port direction, type mismatches, unused signals) live in the simulation pipeline, not here.
 *   **No Simulation, No TimeMachine:** Despite the project name, this module does not run a simulation or talk to `TimeMachine`. Live debugging is driven from `Kmila.Shared.Services` against the `Interpreter`.
+*   **Stray `test_output.vcd` in the module root:** A `Debugger/test_output.vcd` file sits at the module root. It is a **leftover artifact, not produced by this module** (which runs no simulation and emits no VCD — see above). Treat it as safe to ignore/remove during cleanup; it plays no part in the Debugger's pre-processing pass.
 
 ## 7.bis. Audit diagrams (2026-05-09)
 
