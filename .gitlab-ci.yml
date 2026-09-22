@@ -1,0 +1,12 @@
+variables:
+    GIT_DEPTH: "20"
+before_script:
+    - rm -rf ../Interpreter
+    - rm -rf ../TimeMachine
+    - git clone --depth 20 "http://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:8083/${CI_PROJECT_NAMESPACE}/Interpreter.git" ../Interpreter
+    - git clone --depth 20 "http://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:8083/${CI_PROJECT_NAMESPACE}/TimeMachine.git" ../TimeMachine
+build-test:
+    stage: test
+    image: mcr.microsoft.com/dotnet/sdk:9.0
+    script:
+        - dotnet run -c Release -f net9.0 -p:TargetFrameworks=net9.0
