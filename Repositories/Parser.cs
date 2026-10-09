@@ -52,8 +52,8 @@ public class Parser
     public List<Entity> Entities { get; private set; } = new();
 
     /// <summary>
-    /// Structured diagnostics collected during the most recent <see cref="ParseFile"/>
-    /// call. Errors that used to propagate as a <see cref="Parser.Models.ParserException"/>
+    /// Structured diagnostics collected during the most recent <see cref="ParseFile()"/>
+    /// call. Errors that used to propagate as a <c>ParserException</c>
     /// still do — but we also mirror them here so the Editor can surface
     /// line-accurate Monaco markers without catching exceptions.
     /// Warnings (missing semicolons, style lapses, etc.) are pushed here and
@@ -257,7 +257,7 @@ public class Parser
     }
 
     /// <summary>
-    /// Lightweight source-level validator run after <see cref="ParseFile"/>.
+    /// Lightweight source-level validator run after <see cref="ParseFile()"/>.
     /// Emits warning-level diagnostics for common student mistakes:
     /// <list type="bullet">
     ///   <item><description>Statement-ending lines without the expected semicolon.</description></item>
