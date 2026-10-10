@@ -9,8 +9,17 @@ stages:
 variables:
     GIT_DEPTH: "20"
 before_script:
+    # Clean every sibling the build touches, including the Interpreter's own
+    # transitive deps (Parser, LibraryCompiler) — otherwise a stale copy left on
+    # the runner from a previous job is used and breaks the build (CS1061).
     - rm -rf ../Interpreter
     - rm -rf ../TimeMachine
+    - rm -rf ../Parser
+    - rm -rf ../LibraryCompiler
+    # Clone in dependency order: Parser + LibraryCompiler (needed by Interpreter),
+    # then Interpreter and TimeMachine.
+    - git clone --depth 20 "http://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:8083/${CI_PROJECT_NAMESPACE}/Parser.git" ../Parser
+    - git clone --depth 20 "http://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:8083/${CI_PROJECT_NAMESPACE}/LibraryCompiler.git" ../LibraryCompiler
     - git clone --depth 20 "http://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:8083/${CI_PROJECT_NAMESPACE}/Interpreter.git" ../Interpreter
     - git clone --depth 20 "http://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:8083/${CI_PROJECT_NAMESPACE}/TimeMachine.git" ../TimeMachine
 build-test:
