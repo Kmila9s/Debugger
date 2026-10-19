@@ -298,7 +298,6 @@ classDiagram
         +List~Entity~ Entities
         +List~Diagnostic~ Diagnostics
         -List _excludedEnds
-        -int funcProcDepth
         +ParseFile() void
         +RunDiagnostics(content) void
         -LooksLikeStatement(line) bool
