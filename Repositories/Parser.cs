@@ -182,7 +182,15 @@ public class Parser
             {
                 // Check for entity end: "end EntityName;" or "end entity;"
                 // Exclude "end if;", "end when;", "end process;"
-                if (comparer.StartsWith("end ") && comparer.EndsWith(";") && !_excludedEnds.Any(comparer.EndsWith))
+                // One-line entity (`entity X is port (...); end entity X;`): the
+                // whole declaration, including its closing `end`, is on the same
+                // line that opened it. An entity declarative region has no nested
+                // `end`, so a standalone `end` word on an `entity …;` line always
+                // closes it — fix the scanner rather than demand a line layout.
+                bool inlineEntityEnd = comparer.StartsWith("entity") && comparer.EndsWith(";")
+                    && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bend\b");
+                if ((comparer.StartsWith("end ") && comparer.EndsWith(";") && !_excludedEnds.Any(comparer.EndsWith))
+                    || inlineEntityEnd)
                 {
                     rawEntity.Add((entry.lineNo, item.Trim()));
                     var entity = new Entity();
