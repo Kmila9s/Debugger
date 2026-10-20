@@ -142,7 +142,21 @@ public class Parser
         var content = new List<(int lineNo, string text)>(rawLines.Length);
         for (int i = 0; i < rawLines.Length; i++)
         {
-            var trimmed = rawLines[i].Trim();
+            var raw = rawLines[i];
+            // Strip a VHDL line comment (-- to end-of-line) before structural
+            // analysis so a trailing comment on a structural line
+            // (e.g. `end architecture X;  -- note`) doesn't hide the ';' the
+            // scanner keys on. String-aware: a '--' inside a double-quoted
+            // string (e.g. a report/assert message) is left intact.
+            int cut = -1;
+            bool inStr = false;
+            for (int k = 0; k + 1 < raw.Length; k++)
+            {
+                if (raw[k] == '"') inStr = !inStr;
+                else if (!inStr && raw[k] == '-' && raw[k + 1] == '-') { cut = k; break; }
+            }
+            if (cut >= 0) raw = raw[..cut];
+            var trimmed = raw.Trim();
             if (string.IsNullOrEmpty(trimmed) || trimmed == " ") continue;
             content.Add((i, trimmed));
         }
@@ -189,7 +203,7 @@ public class Parser
                 // closes it — fix the scanner rather than demand a line layout.
                 bool inlineEntityEnd = comparer.StartsWith("entity") && comparer.EndsWith(";")
                     && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bend\b");
-                if ((comparer.StartsWith("end ") && comparer.EndsWith(";") && !_excludedEnds.Any(comparer.EndsWith))
+                if (((comparer.StartsWith("end ") || comparer == "end;") && comparer.EndsWith(";") && !_excludedEnds.Any(comparer.EndsWith))
                     || inlineEntityEnd)
                 {
                     rawEntity.Add((entry.lineNo, item.Trim()));
@@ -219,7 +233,7 @@ public class Parser
                     continue;
                 }
 
-                if (comparer.StartsWith("end ") && comparer.EndsWith(";"))
+                if ((comparer.StartsWith("end ") || comparer == "end;") && comparer.EndsWith(";"))
                 {
                     var parts = comparer.Split(' ');
                     string endName = parts.Length >= 2 ? parts[1].TrimEnd(';') : string.Empty;
@@ -235,18 +249,42 @@ public class Parser
                         continue;
                     }
 
-                    // At depth 0: it's the arch end IF the suffix matches the
-                    // arch name, the entity name, or is the bare `end;`.
+                    // A nested construct end (end if/process/generate/block/...).
+                    // These always carry their keyword, so they're never the arch end.
                     if (_excludedEnds.Contains(endName))
                         continue;
 
-                    bool matchesArch =
-                        endName == currentArchName.ToLower() ||
-                        endName == currentEntityArchName.ToLower() ||
-                        endName == "architecture" ||
-                        string.IsNullOrEmpty(endName); // `end;`
+                    bool shouldClose;
+                    if (endName == "architecture")
+                    {
+                        // Explicit `end architecture [<label>];` — the keyword makes
+                        // this unambiguously the architecture end, so a present label
+                        // MUST match the arch (or entity) name; a wrong one is an error.
+                        string endLabel = parts.Length >= 3 ? parts[2].TrimEnd(';') : string.Empty;
+                        bool labelOk =
+                            string.IsNullOrEmpty(endLabel) ||
+                            endLabel == currentArchName.ToLower() ||
+                            endLabel == currentEntityArchName.ToLower();
+                        if (!labelOk)
+                            throw new global::Parser.Models.ParserException(
+                                $"end label '{endLabel}' does not match architecture '{currentArchName}'",
+                                entry.lineNo + 1, 1);
+                        shouldClose = true;
+                    }
+                    else
+                    {
+                        // Bare `end;` or `end <name>;`. Close only when it matches the
+                        // arch/entity name (or is bare). A non-matching bare name may
+                        // be an untracked function/procedure end (`function`/`procedure`
+                        // aren't in _excludedEnds — they use funcProcDepth), so don't
+                        // throw here: fall through and keep collecting as before.
+                        shouldClose =
+                            string.IsNullOrEmpty(endName) ||
+                            endName == currentArchName.ToLower() ||
+                            endName == currentEntityArchName.ToLower();
+                    }
 
-                    if (matchesArch)
+                    if (shouldClose)
                     {
                         Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
                         if (entity == null) throw new Exception("Entity not found");
