@@ -224,6 +224,25 @@ public class Parser
             {
                 rawEntity.Add((entry.lineNo, item));
 
+                // One-line architecture: `architecture X of Y is begin … end
+                // [architecture] [X];` — opened and closed on the same line, so
+                // the `end`-keyed detection below (which needs a line STARTING
+                // with 'end') never fires. The declaration is self-contained, so
+                // synthesize it now. (Fix Kmila, don't require a line layout.)
+                if (comparer.StartsWith("architecture") && comparer.EndsWith(";")
+                    && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bbegin\b")
+                    && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bend\b"))
+                {
+                    Entity oneLineEntity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
+                    if (oneLineEntity == null) throw new Exception("Entity not found");
+                    Architecture oneLineArch = new(oneLineEntity.Ports, oneLineEntity.Generics);
+                    oneLineArch.Syntetize(rawEntity, cancellationToken);
+                    oneLineEntity.SetArchitecture(oneLineArch);
+                    rawEntity = new();
+                    it = 0;
+                    continue;
+                }
+
                 // Track function/procedure nesting so `end Adder;` inside the
                 // arch declarative region doesn't end the whole architecture.
                 if ((comparer.Contains("function ") && comparer.Contains(" is")) ||
