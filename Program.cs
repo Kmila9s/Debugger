@@ -56,6 +56,17 @@ class Program
         foreach (var file in files)
         {
             Console.WriteLine(file);
+
+            // Mirror the app/Interpreter scan path (Interpreter/Program.cs) so this
+            // file's declared names resolve and the undeclared-identifier check does
+            // not throw on valid VHDL — otherwise legal designs produce cosmetic
+            // "[Error] no declaration ..." noise here. Clear per file so names from a
+            // previous file never leak forward and suppress a genuine error.
+            Interpreter.Services.PackageRegistry.Instance.Clear();
+            Interpreter.Services.FunctionRegistry.Instance.Clear();
+            try { Interpreter.Services.PackageSubtypeScanner.ScanFile(file); } catch { /* best-effort */ }
+            try { Interpreter.Services.PackageRegistry.Instance.RegisterDeclaredNamesFromSource(File.ReadAllText(file)); } catch { /* best-effort */ }
+
             Repositories.Parser parser = new(file);
             string? parseError = null;
             try
