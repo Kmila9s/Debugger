@@ -31,7 +31,7 @@ This project is built using .NET and MAUI, ensuring a modern and maintainable co
 This specific module, the **Debugger**, is a thin façade that bridges raw VHDL source files with the `Interpreter` data models. In the current state of the codebase it does **two** jobs:
 
 1.  Run a fast structural pass to extract top-level `entity` / `architecture` blocks and hydrate `Interpreter.Services.Entity` / `Interpreter.Services.Architecture` objects from them.
-2.  Run a lightweight source-level **lint pass** (`RunDiagnostics`) that emits structured `Parser.Models.Diagnostic` entries (missing `;`, `begin` / `end` imbalance) for the editor surface to render as Monaco markers — *before* the structural parse runs, so warnings still appear on broken sources.
+2.  Run a lightweight source-level **lint pass** (`Lint.VhdlLinter`) that emits structured `Parser.Models.Diagnostic` entries (missing `;`, `begin` / `end` imbalance) for the editor surface to render as Monaco markers — *before* the structural parse runs, so warnings still appear on broken sources.
 
 It does **not** orchestrate the live simulation or manage breakpoints; those responsibilities live in `Kmila.Shared.Services` (`SimulationParameters`, `SimulationCoordinator`, etc.) and the `Interpreter` simulation runner. `Debugger.csproj` still `ProjectReference`s both `Interpreter` and `TimeMachine` because the structural pass hands the results back to `Interpreter` types and downstream consumers (Kmila.Shared) rely on TimeMachine snapshots being reachable from the same assembly graph — but nothing inside `Debugger` itself calls into TimeMachine. Earlier README revisions described a wider "central orchestrator" role that never materialised here; this module stayed pre-processing-only.
 
@@ -56,8 +56,10 @@ The Debugger module is designed as a high-level coordinator that prepares data f
     *   `List<Parser.Models.Diagnostic> Diagnostics { get; private set; }` — structured warnings produced by the lint pass.
     *   `void ParseFile()` — runs the lint pass first, then walks the file with the 3-state state machine to populate `Entities`. Forwards to `ParseFile(CancellationToken.None)`.
     *   `void ParseFile(CancellationToken cancellationToken)` — cancellable overload added in Session 22 pass 4 (F-G-08). Threads the token into both `entity.Syntetize(rawEntity, ct)` and `arch.Syntetize(rawEntity, ct)` so the wall-timeout hook (`KMILA_SIM_WALL_TIMEOUT_MS` in `HeadlessSimulator`) can actually interrupt a stuck synthesis descent instead of waiting for the HTTP client to disconnect. Prior to pass 4 the parser had no cancellation surface.
-    *   `private void RunDiagnostics(string source)` — the lint pass itself.
-    *   `private static bool LooksLikeStatement(string lower)` — heuristic that decides which lines should require a trailing `;`.
+*   **`Debugger.Repositories.Lint`** (v3.0.6) — the lint pass, one class per rule:
+    *   `VhdlLinter.Run(string source)` — runs every rule; `Parser.ParseFile` calls it first.
+    *   `LintSource` — the source prepared once: raw lines, lines without comments (`Parser.Models.VhdlText`), and lines with literals blanked.
+    *   `IVhdlLintRule` — one rule; `MissingSemicolonRule` and `BlockBalanceRule` implement it.
 
 ### Core Data Models
 
@@ -71,8 +73,8 @@ This module **uses** data models defined in two upstream modules:
 
 | Code | Severity | Trigger |
 |------|----------|---------|
-| `VHD-MISSING-SEMICOLON` | Warning | Line looks like a statement (`<=`, `:=`, `=>`, or starts with `library`/`use`/`signal`/`variable`/`constant`) but does not end with `;`, `,`, `is`, `then`, `else`, `loop`, `begin`, `generate`, `(`, or `)`. |
-| `VHD-BLOCK-BALANCE` | Warning | Total `begin` keyword count does not match total `end` keyword count across the whole file. Reported once at the last line. |
+| `VHD-MISSING-SEMICOLON` | Warning | A statement (assignment, association, object/library declaration) never reaches its `;` before the next statement starts — continuation lines are never flagged. Inside a port/generic/parameter list, an interface declaration followed by another declaration (the list's last one is closed by `)`). Reported on the unterminated line. |
+| `VHD-BLOCK-BALANCE` | Warning | Block stack over a light token stream: a block (design unit, process, subprogram body, `if`/`case`/`loop`/`generate`, `record`, `component`, …) never closed; `end <keyword>` naming a different block; `end` with nothing open; missing `begin` in an architecture/process/subprogram body/block; `begin` where it is illegal or repeated. Reported on the offending line. |
 
 Errors thrown by the upstream `Parser` project propagate as `Parser.Models.ParserException`; callers (e.g. the Editor page) typically convert them with `Diagnostic.FromException(...)` so they appear in the same Monaco marker stream.
 
@@ -133,7 +135,7 @@ The following diagrams illustrate the **actual** data flow and class relationshi
 ```mermaid
 graph TD
     A["VHDL Files (.vhdl)"] --> B["Debugger.Repositories.Parser"]
-    B -->|RunDiagnostics first| D["List&lt;Parser.Models.Diagnostic&gt;<br/>(warnings)"]
+    B -->|VhdlLinter.Run first| D["List&lt;Parser.Models.Diagnostic&gt;<br/>(warnings)"]
     B -->|Structural state machine| C["Interpreter.Services.Entity<br/>+ Architecture (with body synthesised)"]
     D --> E["Editor (Monaco markers)<br/>[External — Kmila.Shared]"]
     C --> F["Interpreter Simulation<br/>[External]"]
@@ -160,8 +162,6 @@ classDiagram
         -_excludedEnds : List~string~
         +Parser(filePath : string)
         +ParseFile() void
-        -RunDiagnostics(source : string) void
-        -LooksLikeStatement(lower : string)$ bool
     }
 
     class IntEntity["Interpreter.Services.Entity"] {
@@ -215,7 +215,7 @@ sequenceDiagram
 
     Main->>DbgParser: ParseFile()
     activate DbgParser
-    DbgParser->>DbgParser: RunDiagnostics(FileContent)
+    DbgParser->>DbgParser: VhdlLinter.Run(FileContent)
     Note right of DbgParser: emits VHD-MISSING-SEMICOLON,<br/>VHD-BLOCK-BALANCE warnings
 
     loop For each non-empty line
@@ -275,7 +275,7 @@ The following limitations exist in the current implementation:
 *   **VHDL Comments:** The lint pass strips `--` line comments before analysis, but multiline / block comment forms are not specially handled (VHDL itself does not have `/* ... */`).
 *   **Simple Parsing Approach:** Structure detection relies on `comparer.StartsWith("entity")` / `"architecture"` — no real AST is built in this project. AST-style parsing happens in the upstream `Parser` project.
 *   **Single Entity-Architecture Assumption:** Architectures are matched to entities declared *earlier* in the same file, by name. Out-of-order declarations and cross-file lookups raise `Exception("Entity not found")`.
-*   **Single Diagnostic Pass:** `RunDiagnostics` only emits two codes today (`VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`). Richer rules (port direction, type mismatches, unused signals) live in the simulation pipeline, not here.
+*   **Single Diagnostic Pass:** `VhdlLinter` only emits two codes today (`VHD-MISSING-SEMICOLON`, `VHD-BLOCK-BALANCE`). Richer rules (port direction, type mismatches, unused signals) live in the simulation pipeline, not here.
 *   **No Simulation, No TimeMachine:** Despite the project name, this module does not run a simulation or talk to `TimeMachine`. Live debugging is driven from `Kmila.Shared.Services` against the `Interpreter`.
 *   **Stray `test_output.vcd` in the module root:** A `Debugger/test_output.vcd` file sits at the module root. It is a **leftover artifact, not produced by this module** (which runs no simulation and emits no VCD — see above). Treat it as safe to ignore/remove during cleanup; it plays no part in the Debugger's pre-processing pass.
 
@@ -299,8 +299,6 @@ classDiagram
         +List~Diagnostic~ Diagnostics
         -List _excludedEnds
         +ParseFile() void
-        +RunDiagnostics(content) void
-        -LooksLikeStatement(line) bool
     }
 
     class Tokenizer {
@@ -342,21 +340,15 @@ classDiagram
 ```mermaid
 flowchart TD
     A([DbgParser.ParseFile]) --> B[Cargar FileContent desde disco]
-    B --> C[**Lint pass**: RunDiagnostics FileContent]
-    C --> D[Por cada linea]
-    D --> E{LooksLikeStatement?}
-    E -->|Si y falta `;`| F[Diagnostic VHD-MISSING-SEMICOLON]
-    E -->|No| G[Skip]
-    D --> H[Contar begin / end por bloque]
-    H --> I{Balance?}
-    I -->|No| J[Diagnostic VHD-BLOCK-BALANCE]
-    F --> K[Diagnostics.Add]
+    B --> C[**Lint pass**: VhdlLinter.Run FileContent]
+    C --> D[LintSource: lineas sin comentarios y sin literales]
+    D --> E[MissingSemicolonRule: sentencia pendiente hasta la siguiente]
+    D --> H[BlockBalanceRule: pila de bloques sobre tokens]
+    E -->|sin `;` antes de otra sentencia| F[Diagnostic VHD-MISSING-SEMICOLON]
+    H -->|bloque sin cerrar / end equivocado / begin| J[Diagnostic VHD-BLOCK-BALANCE]
+    F --> K[Diagnostics.AddRange]
     J --> K
-    G --> L
-    K --> L[Continuar siguiente linea]
-    L --> M{Quedan lineas?}
-    M -->|Si| D
-    M -->|No| N[Lint pass completo: Diagnostics persistentes]
+    K --> N[Lint pass completo: Diagnostics persistentes]
 
     N --> O[**Structural pass**: maquina line-based<br/>default -> in-entity -> in-architecture]
     O --> P{Excepcion en parsing?}
@@ -369,6 +361,19 @@ flowchart TD
 ```
 
 ## 8. Changelog
+
+### Version 3.0.6 (2026-11-16)
+
+*   **GAP-LINT-001 closed.** The lint pass moved out of `Parser` into
+    `Repositories/Lint` (one class per rule behind `IVhdlLintRule`). Both rules
+    were rewritten: `VHD-MISSING-SEMICOLON` waits for the next statement before
+    reporting (multi-line statements and the last element of a port list are
+    fine) and `VHD-BLOCK-BALANCE` keeps a block stack instead of comparing
+    `begin`/`end` totals. Zero warnings on 634 valid files (parser corpus,
+    bench reference and legacy sources, practice solutions, templates);
+    `test40.vhdl` no longer warns.
+*   Line comments are stripped through `Parser.Models.VhdlText` (string-aware)
+    instead of an inline copy.
 
 ### Version 3.0.4 (2026-11-16)
 

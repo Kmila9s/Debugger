@@ -136,30 +136,20 @@ public class Parser
         // `end`, unresolved entity reference, etc). Without this, any fatal
         // parse error blanked the Diagnostics list and students saw no
         // Monaco squiggles at all on broken files.
-        RunDiagnostics(FileContent);
+        var source = new Lint.LintSource(FileContent ?? string.Empty);
+        Diagnostics.AddRange(Lint.VhdlLinter.Run(source));
 
         // Normalize content but keep original 0-based line indices — the
         // tokenizer's error formatter renders them as 1-based "Line N", so
-        // we pass the index (i) not the human number (i+1).
-        var rawLines = FileContent.Split("\n");
-        var content = new List<(int lineNo, string text)>(rawLines.Length);
-        for (int i = 0; i < rawLines.Length; i++)
+        // we pass the index (i) not the human number (i+1). The lines come
+        // without their line comment (string-aware), so a trailing comment on
+        // a structural line (`end architecture X;  -- note`) can't hide the
+        // ';' the scanner keys on.
+        var codeLines = source.Code;
+        var content = new List<(int lineNo, string text)>(codeLines.Count);
+        for (int i = 0; i < codeLines.Count; i++)
         {
-            var raw = rawLines[i];
-            // Strip a VHDL line comment (-- to end-of-line) before structural
-            // analysis so a trailing comment on a structural line
-            // (e.g. `end architecture X;  -- note`) doesn't hide the ';' the
-            // scanner keys on. String-aware: a '--' inside a double-quoted
-            // string (e.g. a report/assert message) is left intact.
-            int cut = -1;
-            bool inStr = false;
-            for (int k = 0; k + 1 < raw.Length; k++)
-            {
-                if (raw[k] == '"') inStr = !inStr;
-                else if (!inStr && raw[k] == '-' && raw[k + 1] == '-') { cut = k; break; }
-            }
-            if (cut >= 0) raw = raw[..cut];
-            var trimmed = raw.Trim();
+            var trimmed = codeLines[i].Trim();
             if (trimmed.Length == 0) continue;
             content.Add((i, trimmed));
         }
@@ -322,97 +312,5 @@ public class Parser
             }
         }
 
-    }
-
-    /// <summary>
-    /// Lightweight source-level validator run after <see cref="ParseFile()"/>.
-    /// Emits warning-level diagnostics for common student mistakes:
-    /// <list type="bullet">
-    ///   <item><description>Statement-ending lines without the expected semicolon.</description></item>
-    ///   <item><description>Mismatched begin / end depth.</description></item>
-    /// </list>
-    /// Runs character-by-character on the ORIGINAL <see cref="FileContent"/>
-    /// (not the whitespace-collapsed array used by ParseFile) so the
-    /// line/column coords it reports still match what the student sees in
-    /// Monaco.
-    /// </summary>
-    private void RunDiagnostics(string source)
-    {
-        if (string.IsNullOrEmpty(source)) return;
-
-        var lines = source.Replace("\r\n", "\n").Split('\n');
-        int beginDepth = 0, endDepth = 0;
-
-        for (int i = 0; i < lines.Length; i++)
-        {
-            var raw = lines[i];
-            // Strip VHDL line comments (-- to end-of-line) before analysis.
-            var commentStart = raw.IndexOf("--", StringComparison.Ordinal);
-            var effective = commentStart >= 0 ? raw[..commentStart] : raw;
-            var trimmed = effective.TrimEnd();
-            if (trimmed.Length == 0) continue;
-
-            var lower = trimmed.ToLowerInvariant();
-
-            // Track begin/end balance — mismatched totals surface at the
-            // end of the file as a single diagnostic.
-            if (lower == "begin" || lower.EndsWith(" begin"))
-                beginDepth++;
-            if (lower.StartsWith("end ") || lower == "end" || lower.StartsWith("end;"))
-                endDepth++;
-
-            // Missing-semicolon detector — fires on any statement-looking
-            // line that doesn't terminate properly. Skips block headers
-            // (entity/architecture/process/…), labels, and comments.
-            if (LooksLikeStatement(lower) && !trimmed.EndsWith(";") && !trimmed.EndsWith(",") &&
-                !trimmed.EndsWith("is") && !trimmed.EndsWith("then") &&
-                !trimmed.EndsWith("else") && !trimmed.EndsWith("loop") &&
-                !trimmed.EndsWith("begin") && !trimmed.EndsWith("generate") &&
-                !trimmed.EndsWith("(") && !trimmed.EndsWith(")"))
-            {
-                Diagnostics.Add(new global::Parser.Models.Diagnostic
-                {
-                    Severity    = global::Parser.Models.DiagnosticSeverity.Warning,
-                    Line        = i + 1,
-                    StartColumn = raw.Length - raw.TrimStart().Length + 1,
-                    EndColumn   = Math.Max(1, effective.Length) + 1,
-                    Code        = "VHD-MISSING-SEMICOLON",
-                    Message     = "Statement appears to be missing a trailing ';'. The simulator tolerates this but your synthesizer won't."
-                });
-            }
-        }
-
-        if (beginDepth != endDepth)
-        {
-            Diagnostics.Add(new global::Parser.Models.Diagnostic
-            {
-                Severity    = global::Parser.Models.DiagnosticSeverity.Warning,
-                Line        = Math.Max(1, lines.Length),
-                StartColumn = 1,
-                EndColumn   = 1,
-                Code        = "VHD-BLOCK-BALANCE",
-                Message     = $"Block mismatch: {beginDepth} 'begin' keyword(s) vs {endDepth} 'end' keyword(s). Double-check your block closers."
-            });
-        }
-    }
-
-    /// <summary>
-    /// Heuristic: does this stripped-and-lower-cased line look like a
-    /// statement that ought to end with a semicolon? Rules out declarations
-    /// whose terminators are handled by block parsers (entity/architecture/
-    /// process/if/case/when), library imports, and obvious keywords.
-    /// </summary>
-    private static bool LooksLikeStatement(string lower)
-    {
-        if (lower.Length == 0) return false;
-        // Signal / variable assignments, port assignments, procedure calls.
-        if (lower.Contains("<=") || lower.Contains(":=") || lower.Contains("=>"))
-            return true;
-        // Library / use / signal / variable / constant declarations.
-        if (lower.StartsWith("library ") || lower.StartsWith("use ") ||
-            lower.StartsWith("signal ") || lower.StartsWith("variable ") ||
-            lower.StartsWith("constant "))
-            return true;
-        return false;
     }
 }
