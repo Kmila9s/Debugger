@@ -79,12 +79,12 @@ class Program
                 // Capture the structural parse error so we can show it
                 // AFTER printing the lint diagnostics. Otherwise users see
                 // only the throw and miss the missing-`;` warnings that
-                // RunDiagnostics has already collected.
+                // the lint pass (Lint.VhdlLinter) has already collected.
                 parseError = ex.Message;
             }
 
             // Surface lint-style diagnostics (missing-`;`, mismatched begin/end,
-            // etc.) that ParseFile collected via RunDiagnostics. These were
+            // etc.) that ParseFile collected via Lint.VhdlLinter. These were
             // previously populated but never printed, so users couldn't see
             // structural problems in their VHDL until something blew up later.
             foreach (var d in parser.Diagnostics)
