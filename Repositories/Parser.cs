@@ -1,6 +1,5 @@
 using Interpreter.Models;
 using Interpreter.Services;
-using Parser.Repositories;
 
 namespace Debugger.Repositories;
 
@@ -27,13 +26,11 @@ namespace Debugger.Repositories;
 /// <list type="bullet">
 /// <item><description>Uses string matching rather than full tokenization for structure detection</description></item>
 /// <item><description>Does not handle multiline comments</description></item>
-/// <item><description>The Tokenizer is instantiated but not actively used (reserved for future enhancement)</description></item>
 /// </list>
 /// </para>
 /// </remarks>
 /// <seealso cref="Entity"/>
 /// <seealso cref="Architecture"/>
-/// <seealso cref="Tokenizer"/>
 public class Parser
 {
     /// <summary>
@@ -131,10 +128,6 @@ public class Parser
         // Monaco squiggles at all on broken files.
         RunDiagnostics(FileContent);
 
-        // Note: Tokenizer is instantiated but not actively used in current implementation.
-        // Reserved for future enhancement to provide more robust parsing.
-        Tokenizer tokenizer = new("");
-
         // Normalize content but keep original 0-based line indices — the
         // tokenizer's error formatter renders them as 1-based "Line N", so
         // we pass the index (i) not the human number (i+1).
@@ -157,7 +150,7 @@ public class Parser
             }
             if (cut >= 0) raw = raw[..cut];
             var trimmed = raw.Trim();
-            if (string.IsNullOrEmpty(trimmed) || trimmed == " ") continue;
+            if (trimmed.Length == 0) continue;
             content.Add((i, trimmed));
         }
 
