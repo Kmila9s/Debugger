@@ -84,6 +84,16 @@ public class Parser
         FileContent = File.ReadAllText(filePath);
     }
 
+    private Parser() => FileContent = string.Empty;
+
+    /// <summary>
+    /// Creates a parser over in-memory source text (e.g. an elaborated,
+    /// flattened design) so callers never have to round-trip it through a
+    /// temporary file.
+    /// </summary>
+    /// <param name="source">The complete VHDL source to parse.</param>
+    public static Parser FromSource(string source) => new() { FileContent = source ?? string.Empty };
+
     /// <summary>
     /// Parses the VHDL file content to identify and create Entity and Architecture objects.
     /// </summary>
