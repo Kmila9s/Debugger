@@ -32,8 +32,5 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Interpreter/Interpreter.csproj" />
-    <ProjectReference Include="../TimeMachine/TimeMachine.csproj" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.14" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.14" />
   </ItemGroup>
 </Project>

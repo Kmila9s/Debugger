@@ -7,8 +7,8 @@ This module is a core component of **Kmila-9s**, a project officially titled "Ap
 **Author:** Ulrich Tamayo Daniel
 **Email:** dulricht1700@alumno.ipn.mx
 **Email 2:** danielulrichtamayo@gmail.com
-**Version:** 1.14.1
-**Last Updated:** August 3, 2026
+**Version:** 3.0.4
+**Last Updated:** November 16, 2026
 
 > **Docs sync 2026-09-24** — no functional change to this module this cycle; the
 > 2026-09-23 feature batch (v1.27.0) is **app-only** (see `App/Kmila/README.md` §19).
@@ -369,6 +369,25 @@ flowchart TD
 ```
 
 ## 8. Changelog
+
+### Version 3.0.4 (2026-11-16)
+
+*   Documentation only: `Parser` is reached through the app's language-neutral
+    `Kmila.Frontend` (`VhdlFrontend`), which parses designs in memory via
+    `Parser.FromSource`. Known lint gap GAP-LINT-001: `RunDiagnostics` reports
+    `VHD-MISSING-SEMICOLON` for statements continued on the next line and
+    `VHD-BLOCK-BALANCE` miscounts some `end <keyword>` closers (warnings only).
+
+### Version 3.0.2 (2026-11-15)
+
+*   New `Parser.FromSource(string)` — parse in-memory text (elaborated or
+    specialised designs) without a temporary file.
+
+### Version 3.0.1 (2026-11-15)
+
+*   Removed the unused `Tokenizer` instance in `ParseFile`, an impossible
+    `trimmed == " "` check, and the unused TimeMachine project reference and
+    Microsoft.Extensions.Logging packages.
 
 ### Version 1.14.1 (2026-05-01)
 
