@@ -15,7 +15,7 @@ namespace Debugger.Repositories.Lint;
 public sealed partial class MissingSemicolonRule : IVhdlLintRule
 {
     private const string Code = "VHD-MISSING-SEMICOLON";
-    private const string Message = "Statement appears to be missing a trailing ';'. The simulator tolerates this but your synthesizer won't.";
+    private const string Message = "Statement appears to be missing a trailing ';'.";
 
     /// <summary>Line endings (matched against " " + line) after which the statement continues or a block header ends.</summary>
     private static readonly string[] OpenEndings =
