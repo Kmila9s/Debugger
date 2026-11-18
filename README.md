@@ -362,6 +362,11 @@ flowchart TD
 
 ## 8. Changelog
 
+### Version 3.1.3 (2026-11-18)
+
+*   `VHD-MISSING-SEMICOLON` no longer claims the simulator tolerates the
+    missing `;` — since v3.1.3 the simulator rejects it like GHDL.
+
 ### Version 3.0.6 (2026-11-16)
 
 *   **GAP-LINT-001 closed.** The lint pass moved out of `Parser` into
