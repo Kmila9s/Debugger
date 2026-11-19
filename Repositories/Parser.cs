@@ -156,6 +156,7 @@ public class Parser
 
         List<(int line, string text)> rawEntity = new();
         int it = 0;  // State: 0=default, 1=in entity, 2=in architecture
+        var configurations = new ConfigurationLineSkipper();
         string currentArchName = string.Empty;
         string currentEntityArchName = string.Empty;
         // Track nested function/procedure depth so `end <name>;` lines for
@@ -166,6 +167,10 @@ public class Parser
         {
             var item = entry.text;
             string comparer = item.ToLower();
+
+            // A configuration declaration (G20) is a design unit of its own: the
+            // elaborator applies it; the structural scan skips it.
+            if (it == 0 && configurations.Consume(comparer)) continue;
 
             // Detect start of entity block
             if (comparer.StartsWith("entity"))
@@ -227,7 +232,7 @@ public class Parser
                     && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bend\b"))
                 {
                     Entity oneLineEntity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
-                    if (oneLineEntity == null) throw new Exception("Entity not found");
+                    if (oneLineEntity == null) throw EntityNotFound(currentEntityArchName, entry.lineNo);
                     Architecture oneLineArch = new(oneLineEntity.Ports, oneLineEntity.Generics);
                     oneLineArch.Syntetize(rawEntity, cancellationToken);
                     oneLineEntity.SetArchitecture(oneLineArch);
@@ -299,7 +304,7 @@ public class Parser
                     if (shouldClose)
                     {
                         Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
-                        if (entity == null) throw new Exception("Entity not found");
+                        if (entity == null) throw EntityNotFound(currentEntityArchName, entry.lineNo);
 
                         Architecture arch = new(entity.Ports, entity.Generics);
                         // F-G-08 pass 4: use the tuple-list + ct overload so wall-timeout can break out.
@@ -311,6 +316,13 @@ public class Parser
                 }
             }
         }
-
     }
+
+    /// <summary>
+    /// An architecture whose entity is neither in this text nor among the
+    /// entities seeded from the project's other files (G21); GHDL reports the
+    /// unit at the architecture.
+    /// </summary>
+    private static global::Parser.Models.ParserException EntityNotFound(string entityName, int lineIndex) =>
+        new($"entity \"{entityName}\" not found", lineIndex + 1, 1);
 }

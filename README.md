@@ -362,6 +362,13 @@ flowchart TD
 
 ## 8. Changelog
 
+### Version 3.1.4 (2026-11-18)
+
+*   Configuration declarations are skipped as a unit (`ConfigurationLineSkipper`,
+    nested `for … end for` counted). An architecture whose entity is missing is a
+    `ParserException` at its line (`entity "x" not found`), and entities from the
+    project's other files can be seeded before parsing (G21).
+
 ### Version 3.1.3 (2026-11-18)
 
 *   `VHD-MISSING-SEMICOLON` no longer claims the simulator tolerates the
