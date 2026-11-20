@@ -231,7 +231,7 @@ public class Parser
                     && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bbegin\b")
                     && System.Text.RegularExpressions.Regex.IsMatch(comparer, @"\bend\b"))
                 {
-                    Entity oneLineEntity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
+                    Entity oneLineEntity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName, StringComparison.OrdinalIgnoreCase)) ?? default!;
                     if (oneLineEntity == null) throw EntityNotFound(currentEntityArchName, entry.lineNo);
                     Architecture oneLineArch = new(oneLineEntity.Ports, oneLineEntity.Generics);
                     oneLineArch.Syntetize(rawEntity, cancellationToken);
@@ -303,7 +303,7 @@ public class Parser
 
                     if (shouldClose)
                     {
-                        Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName)) ?? default!;
+                        Entity entity = Entities.FirstOrDefault(p => p.Name.Equals(currentEntityArchName, StringComparison.OrdinalIgnoreCase)) ?? default!;
                         if (entity == null) throw EntityNotFound(currentEntityArchName, entry.lineNo);
 
                         Architecture arch = new(entity.Ports, entity.Generics);
