@@ -362,6 +362,10 @@ flowchart TD
 
 ## 8. Changelog
 
+### Version 3.1.6 (2026-11-20)
+
+*   `architecture … of X` finds its entity without case (G74).
+
 ### Version 3.1.4 (2026-11-18)
 
 *   Configuration declarations are skipped as a unit (`ConfigurationLineSkipper`,
